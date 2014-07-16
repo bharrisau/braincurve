@@ -123,7 +123,7 @@
       };
       return function (m) {
         var i, b, k, x, y, C, D, round, next, state;
-        state = [];
+        state = new Uint32Array(25);
         for (i = 0; i < 25; i += 1) {
           state[i] = 0;
         }
@@ -161,7 +161,7 @@
             state[0] ^= RC[round];
           }
         }
-        return state.slice(0, 8).map(output_fn).join("");
+        return Array.apply([], state.subarray(0, 8)).map(output_fn).join("");
       };
     }());
   </script>
@@ -199,7 +199,27 @@
         return ret >>> (32-b);
       };
       lbrh = function (x, lambda, garlic) {
+        // Create array of 2^garlic 512bit cells
+        var c, r, i, k, p;
+        c = 1 << garlic;
+        r = new Uint32Array(c * 16);
+        for (i = 0; i < c; i++) {
+          r.set(x.squeeze(), i*16);
+        }
 
+        for (k = 0; k < lambda; k++) {
+          for (i = 0; i < c; i++) {
+            p = reverse(i, garlic);
+            r.set(x.duplex(r.subarray(p*16, p*16+15)), p*16);
+          }
+          k++;
+          if (k >= lambda) {
+            break;
+          }
+          for (i = 0; i < c; i++) {
+            r.set(x.duplex(r.subarray(i*16, i*16+15)), i*16);
+          }
+        }
       };
       return function (pwd, salt, data, lambda, min_garlic, garlic, hashlen,
           client, domain) {
