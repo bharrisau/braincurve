@@ -167,9 +167,11 @@
   </script>
   <script>
     // Catena in JS
+    // Using sponge function, with minor changes to Catena to support the sponge.
+    // Mode is 0 for password scamble, 1 for key derivation, and 2 for proof-of-work.
     "use strict";
     var catena = (function () {
-      var reverse, reverse_table;
+      var reverse, reverse_table, lbrh;
       reverse_table = 
       [
         0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0, 
@@ -195,11 +197,38 @@
                   (reverse_table[(i >>> 16) & 0xff] << 8) |
                   (reverse_table[(i >>> 24) & 0xff]);
         return ret >>> (32-b);
-      }
+      };
+      lbrh = function (x, lambda, garlic) {
 
-      return function (vars, var2) {
-        return reverse(vars, var2);
-
+      };
+      return function (pwd, salt, data, lambda, min_garlic, garlic, hashlen,
+          client, domain) {
+        // Check inputs
+        // Create sponge
+        var x = kekkak(512, 288, 12);
+        // Calculate initial x
+        var tweak = String.fromCharCode(0xff | ((mode & 0xff) << 8)) +
+          String.fromCharCode((lambda & 0xff) | ((hashlen & 0xff) << 8)) +
+          String.fromCharCode(salt.length() & 0xff);
+        x.absorb(tweak);
+        x.absorb(data);
+        x.absorb(pwd);
+        x.absorb(salt);
+        // Truncate to hashlen
+        x.truncate(hashlen);
+        for (c = min_garlic; c <= garlic; c++) {
+          lrbh(x, lambda, c);
+          // Some logic for client offload
+          if (c == garlic && client) {
+            return x.get(hashlen)
+          }
+          // An extra hash here for client offload
+          x.truncateAndAbsorb(hashlen, [c & 0xff]);
+          // Simulate starting fresh with the return value
+          // for client independent update
+          x.truncate(hashlen);
+        }
+        return x.get(hashlen);
       };
     }());
   </script>
