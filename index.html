@@ -240,10 +240,10 @@
           lrbh(x, lambda, c);
           // Some logic for client offload
           if (c == garlic && client) {
-            return x.get(hashlen)
+            return x.get();
           }
           // An extra hash here for client offload
-          x.truncateAndAbsorb(hashlen, String.fromCharCode(c & 0xff));
+          x.absorb(String.fromCharCode(c & 0xff));
           // Simulate starting fresh with the return value
           // for client independent update
           x.truncate(hashlen);
