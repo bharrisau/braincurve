@@ -68,7 +68,8 @@
 		</div>
 
 	</div><!-- container -->
-  <script>
+  <script id="catena">
+<!--<script id="catena" type="javascript/worker">-->
     /* keccak32.js
      * Implements the final version of keccak[256, 544, 0] submitted to NIST,
      * truncated to 256 bits and acting on UTF-16LE strings.
@@ -169,6 +170,8 @@
         this.capacity = capacity;
         this.rounds = rounds;
         this.state = new ArrayBuffer(100);
+        this.state32 = new Uint32Array(this.state);
+        this.state8 = new Uint8Array(this.state);
         this.C = new Uint32Array(25);
         this.D = new Uint32Array(25);
         this.next = new Uint32Array(25);
@@ -194,10 +197,9 @@
       Keccak32.prototype.absorb = function (input, l) {
         // TODO(bharrisau) include bit padding
         var b, k, rohb, remain, state, lastR;
-        input = new Uint8Array(input);
         rohb = this.rohb;
         lastR = this.lastR;
-        state = new Uint8Array(this.state);
+        state = this.state8;
         // length + 1 byte for padding
         remain = input.length + 1;
         for (b = 0; remain > 0; b += rohb) {
@@ -215,7 +217,7 @@
               state[lastR] ^= this.last;
             }
           }
-          this.doRounds(this.rounds);
+          this.doRounds();
         }
         return state.subarray(0, l);
       };
@@ -224,12 +226,13 @@
         into.set(state.subarray(0, into.length));
         this.doRounds(this.rounds);
       };
-      Keccak32.prototype.doRounds = function (rounds) {
-        var x, i, y, C, D, next, state, round;
+      Keccak32.prototype.doRounds = function () {
+        var x, i, y, C, D, next, state, round, rounds;
         C = this.C;
         D = this.D;
         next = this.next;
-        state = new Uint32Array(this.state);
+        rounds = this.rounds;
+        state = this.state32;
         
         for (round = 0; round < rounds; round++) {
           for (x = 0; x < 5; x += 1) {
@@ -339,15 +342,18 @@
         }
       }
 
+      // catena test "", [], [], 5
+      // 245,181,61,7,184,69,252,170,87,83,82,224,90,235,49,210,221,168,28,198,4,11,187,240,12,195,122,154,74,70,253,144
+
+      // catena test "abc", [0, 0, 0], [1, 2, 3], 5
+      // 97,28,21,93,125,176,34,34,129,219,223,0,67,205,155,167,63,97,147,157,111,82,73,191,77,235,232,54,140,65,163,223
+
       console.log("Validation succeeded");
       return true;
     }
-  </script>
-  <script>
     // Catena in JS
     // Using sponge function, with minor changes to Catena to support the sponge.
     // Mode is 0 for password scamble, 1 for key derivation, and 2 for proof-of-work.
-    "use strict";
     var catena = (function () {
       var reverse, reverse_table, lbrh, zeroes;
       reverse_table = 
@@ -410,6 +416,8 @@
         // Try to create the world
         var buf = new ArrayBuffer((1 << garlic) * cellSize);
         var bufA = new Uint8Array(buf);
+        data = new Uint8Array(data);
+        salt = new Uint8Array(salt);
         // Check inputs
         // Calculate initial x
         x.absorb(new Uint8Array([0xff, domain, lambda, hashlen, salt.length]), 0);
@@ -421,7 +429,7 @@
         for (var i = 0; i < pwd.length; i++) {
           password[i] = pwd.charCodeAt(i);
         }
-        x.absorb(password.buffer, 0);
+        x.absorb(new Uint8Array(password.buffer), 0);
         // Truncate to hashlen
         bufA.set(x.absorb(salt, hashlen));
         for (c = min_garlic; c <= garlic; c++) {
@@ -441,6 +449,40 @@
         return bufA.subarray(0, hashlen);
       };
     }());
+    addEventListener('message', function(e) {
+      e = e.data;
+      var ret = Array.apply([], catena(e.pwd, e.salt, e.data, e.lambda,
+            e.garlic, e.garlic, e.len, false, 0));
+      self.postMessage(ret);
+      //var data = e.data;
+      //switch (data.cmd) {
+      //  case 'start':
+      //    postMessage('WORKER STARTED: ' + data.msg);
+      //    break;
+      //  case 'stop':
+      //...
+    }, false);
+  </script>
+  <script>
+    var callCatena = function(pwd, salt, data, garlic) {
+      var blob = new Blob([document.querySelector('#catena').textContent]);
+
+      var worker = new Worker(window.URL.createObjectURL(blob));
+      worker.onmessage = function(e) {
+        console.log("Received: " + e.data);
+      }
+      var options = {
+        pwd: pwd,
+        salt: salt,
+        data: data,
+        lambda: 4,
+        len: 32,
+        garlic: garlic}
+      worker.postMessage(options); // Start the worker.
+    };
+    // This script won't be parsed by JS engines
+    // because its type is javascript/worker.
+    // Rest of your worker code goes here.
   </script>
 
 <!-- End Document
