@@ -104,8 +104,8 @@
 
     /*jslint white: true, onevar: true, undef: true, nomen: true, eqeqeq: true, plusplus: true, regexp: true, newcap: true, immed: true, strict: true */
     "use strict";
-    var keccak32 = (function () {
-      var permute, RC, r, circ, hex, output_fn;
+    var Keccak32 = (function () {
+      var permute, RC, r, circ, hex, output_fn, run, doRounds;
       permute = [0, 10, 20, 5, 15, 16, 1, 11, 21, 6, 7, 17, 2, 12, 22, 23, 8, 18, 3, 13, 14, 24, 9, 19, 4];
       RC = "1,8082,808a,80008000,808b,80000001,80008081,8009,8a,88,80008009,8000000a,8000808b,8b,8089,8003,8002,80,800a,8000000a,80008081,8080"
         .split(",").map(function (i) { 
@@ -121,7 +121,7 @@
       output_fn = function (n) {
         return hex(n & 255) + hex(n >>> 8) + hex(n >>> 16) + hex(n >>> 24);
       };
-      return function (m) {
+      run = function (m) {
         var i, b, k, x, y, C, D, round, next, state;
         state = new Uint32Array(25);
         for (i = 0; i < 25; i += 1) {
@@ -163,7 +163,185 @@
         }
         return Array.apply([], state.subarray(0, 8)).map(output_fn).join("");
       };
+      function Keccak32(roh, capacity, rounds) {
+        this.roh = roh;
+        this.rohb = roh/8;
+        this.capacity = capacity;
+        this.rounds = rounds;
+        this.state = new ArrayBuffer(100);
+        this.C = new Uint32Array(25);
+        this.D = new Uint32Array(25);
+        this.next = new Uint32Array(25);
+        this.reset();
+
+        var r = 800 - capacity;
+        this.lastR = Math.ceil(r/8.0) - 1;
+
+        var pad = r - roh;
+        // When pad = 0, do like above
+        this.first = 0x01;
+        this.last = 0x80;
+        this.single = 0x81;
+      }
+
+      Keccak32.prototype.reset = function () {
+        var state = new Uint32Array(this.state);
+        for (var i = 0; i < state.length; i++) {
+          state[i] = 0;
+        }
+      };
+
+      Keccak32.prototype.absorb = function (input, l) {
+        // TODO(bharrisau) include bit padding
+        var b, k, rohb, remain, state, lastR;
+        input = new Uint8Array(input);
+        rohb = this.rohb;
+        lastR = this.lastR;
+        state = new Uint8Array(this.state);
+        // length + 1 byte for padding
+        remain = input.length + 1;
+        for (b = 0; remain > 0; b += rohb) {
+          for (k = 0; k < rohb && remain > 1; k++, remain--) {
+            state[k] ^= input[b+k];
+          }
+          // When only padding byte left, and room in r
+          if (remain == 1 && k <= lastR) {
+            // Only a padding byte left
+            remain = 0;
+            if (k == lastR) {
+              state[k] ^= this.single;
+            } else {
+              state[k] ^= this.first;
+              state[lastR] ^= this.last;
+            }
+          }
+          this.doRounds(this.rounds);
+        }
+        return state.subarray(0, l);
+      };
+      Keccak32.prototype.squeeze = function (into) {
+        var state = new Uint8Array(this.state);
+        into.set(state.subarray(0, into.length));
+        this.doRounds(this.rounds);
+      };
+      Keccak32.prototype.doRounds = function (rounds) {
+        var x, i, y, C, D, next, state, round;
+        C = this.C;
+        D = this.D;
+        next = this.next;
+        state = new Uint32Array(this.state);
+        
+        for (round = 0; round < rounds; round++) {
+          for (x = 0; x < 5; x += 1) {
+            C[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]; 
+          }
+          for (x = 0; x < 5; x += 1) {
+            D[x] = C[(x + 4) % 5] ^ circ(C[(x + 1) % 5], 1);
+          }
+          for (i = 0; i < 25; i += 1) {
+            next[permute[i]] = circ(state[i] ^ D[i % 5], r[i]);
+          }
+          for (x = 0; x < 5; x += 1) {
+            for (y = 0; y < 25; y += 5) {
+              state[y + x] = next[y + x] ^ ((~ next[y + (x + 1) % 5]) & (next[y + (x + 2) % 5]));
+            }
+          }
+          state[0] ^= RC[round];
+        }
+      };        
+      return Keccak32;
     }());
+    var test = function() {
+      var b, c, d;
+      var a = new Keccak32(256, 544, 22);
+     /*     ShortMsgKAT_r256c544.txt
+     *         Len = 0
+     *         Msg = 00
+     *         Squeezed = 2507DC4976767ADD735F22C1831FBF323CB9F94755C289A680B327ADFF881FCD5D9B3816314C55AB80881001B833C5BD02E8AC5359B07C27ACDFBB64ABE8738451AA7049
+     *         ...
+     *         Len = 16
+     *         Msg = 41FB
+     *         Squeezed = DCCDEF818CEEFE1CB20AF60AAFBF836D889462AC1A1BCEB756648B6B5CAE991B2C7C8976BA791CB69E8254ADAE50FD7A0F0AADB2546A45C55F7824EBD4A48998C09A69E7
+     */
+      b = new Uint8Array(0);
+      c = a.absorb(b, 32);
+      var d1 = [0x25, 0x07, 0xDC, 0x49, 0x76, 0x76, 0x7A, 0xDD,
+          0x73, 0x5F, 0x22, 0xC1, 0x83, 0x1F, 0xBF, 0x32,
+          0x3C, 0xB9, 0xF9, 0x47, 0x55, 0xC2, 0x89, 0xA6,
+          0x80, 0xB3, 0x27, 0xAD, 0xFF, 0x88, 0x1F, 0xCD];
+      for (var i = 0; i < c.length; i++) {
+        if (c[i] != d1[i]) {
+          console.log("Validation error");
+          return false;
+        }
+      }
+
+
+      a.reset();
+      b = new Uint8Array([0x41, 0xFB]);
+      //b[0] = 0x41;
+      //b[1] = 0xFB;
+      c = a.absorb(b, 32);
+      d = [0xDC, 0xCD, 0xEF, 0x81, 0x8C, 0xEE, 0xFE, 0x1C,
+          0xB2, 0x0A, 0xF6, 0x0A, 0xAF, 0xBF, 0x83, 0x6D,
+          0x88, 0x94, 0x62, 0xAC, 0x1A, 0x1B, 0xCE, 0xB7,
+          0x56, 0x64, 0x8B, 0x6B, 0x5C, 0xAE, 0x99, 0x1B];
+      for (var i = 0; i < c.length; i++) {
+        if (c[i] != d[i]) {
+          console.log("Validation error");
+          return false;
+        }
+      }
+
+      b = new Uint8Array([0xB3, 0xC5, 0xE7, 0x4B, 0x69, 0x93, 0x3C, 0x25,
+          0x33, 0x10, 0x6C, 0x56, 0x3B, 0x4C, 0xA2, 0x02,
+          0x38, 0xF2, 0xB6, 0xE6, 0x75, 0xE8, 0x68, 0x1E,
+          0x34, 0xA3, 0x89, 0x89, 0x47, 0x85, 0xBD, 0xAD,
+          0xE5, 0x96, 0x52, 0xD4, 0xA7, 0x3D, 0x80, 0xA5,
+          0xC8, 0x5B, 0xD4, 0x54, 0xFD, 0x1E, 0x9F, 0xFD,
+          0xAD, 0x1C, 0x38, 0x15, 0xF5, 0x03, 0x8E, 0x9E,
+          0xF4, 0x32, 0xAA, 0xC5, 0xC3, 0xC4, 0xFE, 0x84,
+          0x0C, 0xC3, 0x70, 0xCF, 0x86, 0x58, 0x0A, 0x60,
+          0x11, 0x77, 0x8B, 0xBE, 0xDA, 0xF5, 0x11, 0xA5,
+          0x1B, 0x56, 0xD1, 0xA2, 0xEB, 0x68, 0x39, 0x4A,
+          0xA2, 0x99, 0xE2, 0x6D, 0xA9, 0xAD, 0xA6, 0xA2,
+          0xF3, 0x9B, 0x9F, 0xAF, 0xF7, 0xFB, 0xA4, 0x57,
+          0x68, 0x9B, 0x9C, 0x1A, 0x57, 0x7B, 0x2A, 0x1E,
+          0x50, 0x5F, 0xDF, 0x75, 0xC7, 0xA0, 0xA6, 0x4B,
+          0x1D, 0xF8, 0x1B, 0x3A, 0x35, 0x60, 0x01, 0xBF,
+          0x0D, 0xF4, 0xE0, 0x2A, 0x1F, 0xC5, 0x9F, 0x65,
+          0x1C, 0x9D, 0x58, 0x5E, 0xC6, 0x22, 0x4B, 0xB2,
+          0x79, 0xC6, 0xBE, 0xBA, 0x29, 0x66, 0xE8, 0x88,
+          0x2D, 0x68, 0x37, 0x60, 0x81, 0xB9, 0x87, 0x46,
+          0x8E, 0x7A, 0xED, 0x1E, 0xF9, 0x0E, 0xBD, 0x09,
+          0x0A, 0xE8, 0x25, 0x79, 0x5C, 0xDC, 0xA1, 0xB4,
+          0xF0, 0x9A, 0x97, 0x9C, 0x8D, 0xFC, 0x21, 0xA4,
+          0x8D, 0x8A, 0x53, 0xCD, 0xBB, 0x26, 0xC4, 0xDB,
+          0x54, 0x7F, 0xC0, 0x6E, 0xFE, 0x2F, 0x98, 0x50,
+          0xED, 0xD2, 0x68, 0x5A, 0x46, 0x61, 0xCB, 0x49,
+          0x11, 0xF1, 0x65, 0xD4, 0xB6, 0x3E, 0xF2, 0x5B,
+          0x87, 0xD0, 0xA9, 0x6D, 0x3D, 0xFF, 0x6A, 0xB0,
+          0x75, 0x89, 0x99, 0xAA, 0xD2, 0x14, 0xD0, 0x7B,
+          0xD4, 0xF1, 0x33, 0xA6, 0x73, 0x4F, 0xDE, 0x44,
+          0x5F, 0xE4, 0x74, 0x71, 0x1B, 0x69, 0xA9, 0x8F,
+          0x7E, 0x2B]);
+      a.reset();
+      c = a.absorb(b, 32);
+      d = [0x55, 0x80, 0x03, 0xDE, 0x96, 0xAC, 0xAB, 0xA6,
+        0x16, 0xA7, 0x30, 0x27, 0xDF, 0xE2, 0x05, 0xC8,
+        0xD0, 0x11, 0xA9, 0x0F, 0x9E, 0x12, 0xA0, 0x75,
+        0x1E, 0x86, 0xDD, 0x1A, 0x3F, 0x11, 0x56, 0x95];
+
+      for (var i = 0; i < c.length; i++) {
+        if (c[i] != d[i]) {
+          console.log("Validation error");
+          return false;
+        }
+      }
+
+      console.log("Validation succeeded");
+      return true;
+    }
   </script>
   <script>
     // Catena in JS
@@ -171,7 +349,7 @@
     // Mode is 0 for password scamble, 1 for key derivation, and 2 for proof-of-work.
     "use strict";
     var catena = (function () {
-      var reverse, reverse_table, lbrh;
+      var reverse, reverse_table, lbrh, zeroes;
       reverse_table = 
       [
         0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0, 
@@ -198,57 +376,69 @@
                   (reverse_table[(i >>> 24) & 0xff]);
         return ret >>> (32-b);
       };
-      lbrh = function (x, lambda, garlic) {
+      lbrh = function (r, cellSize, x, lambda, garlic) {
         // Create array of 2^garlic 512bit cells
-        var c, r, i, k, p;
+        var c, cl, r, i, k, p;
         c = 1 << garlic;
-        r = new Uint32Array(c * 16);
-        for (i = 0; i < c; i++) {
-          r.set(x.squeeze(), i*16);
+        cl = c * cellSize;
+        for (i = 0; i < cl; i += cellSize) {
+          x.squeeze(r.subarray(i, i+cellSize));
         }
 
         for (k = 0; k < lambda; k++) {
           for (i = 0; i < c; i++) {
-            p = reverse(i, garlic);
-            r.set(x.duplex(r.subarray(p*16, p*16+15)), p*16);
+            p = reverse(i, garlic) * cellSize;
+            r.set(x.absorb(r.subarray(p, p+cellSize), cellSize), p);
           }
           k++;
           if (k >= lambda) {
             break;
           }
-          for (i = 0; i < c; i++) {
-            r.set(x.duplex(r.subarray(i*16, i*16+15)), i*16);
+          for (i = 0; i < cl; i += cellSize) {
+            r.set(x.absorb(r.subarray(i, i + cellSize), cellSize), i);
           }
         }
+        // Copy to start of buf
+        r.set(r.subarray(cl - cellSize, cl));
       };
       return function (pwd, salt, data, lambda, min_garlic, garlic, hashlen,
           client, domain) {
+        var c;
+        var cellSize = 64;
+        var roh = 544;
+        var x = new Keccak32(roh, 800-roh, 12);
+        // Try to create the world
+        var buf = new ArrayBuffer((1 << garlic) * cellSize);
+        var bufA = new Uint8Array(buf);
         // Check inputs
-        // Create sponge
-        var x = kekkak(512, 288, 12);
         // Calculate initial x
-        var tweak = String.fromCharCode(0xff | ((mode & 0xff) << 8)) +
-          String.fromCharCode((lambda & 0xff) | ((hashlen & 0xff) << 8)) +
-          String.fromCharCode(salt.length() & 0xff);
-        x.absorb(tweak);
-        x.absorb(data);
-        x.absorb(pwd);
-        x.absorb(salt);
+        x.absorb(new Uint8Array([0xff, domain, lambda, hashlen, salt.length]), 0);
+        // If someone wants the tweak value for some reason
+        bufA.set(x.absorb(data, cellSize));
+        x.reset();
+        x.absorb(bufA.subarray(0, cellSize), 0);
+        var password = new Uint16Array(pwd.length);
+        for (var i = 0; i < pwd.length; i++) {
+          password[i] = pwd.charCodeAt(i);
+        }
+        x.absorb(password.buffer, 0);
         // Truncate to hashlen
-        x.truncate(hashlen);
+        bufA.set(x.absorb(salt, hashlen));
         for (c = min_garlic; c <= garlic; c++) {
-          lrbh(x, lambda, c);
+          x.reset();
+          x.absorb(bufA.subarray(0, hashlen), 0);
+          lbrh(bufA, cellSize, x, lambda, c);
           // Some logic for client offload
           if (c == garlic && client) {
-            return x.get();
+            return bufA.subarray(0, cellSize);
           }
-          // An extra hash here for client offload
-          x.absorb(String.fromCharCode(c & 0xff));
-          // Simulate starting fresh with the return value
-          // for client independent update
-          x.truncate(hashlen);
+          x.reset();
+          // Append current garlic
+          bufA[cellSize] = c & 0xff;
+          // Hash the buffer and get hashlen number of bytes
+          bufA.set(x.absorb(bufA.subarray(0, cellSize+1), hashlen));
         }
-        return x.get(hashlen);
+        return bufA.subarray(0, hashlen);
       };
     }());
   </script>
